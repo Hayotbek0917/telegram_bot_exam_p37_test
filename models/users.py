@@ -18,6 +18,10 @@ class User(CreatedBaseModel):
     def __str__(self):
         return f"{self.id} - {self.first_name}"
 
+    @classmethod
+    def get_by_telegram_id(cls, id):
+        pass
+
 
 class Passport(Model):
     series: Mapped[str] = mapped_column(String(2))

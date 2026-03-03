@@ -1,134 +1,102 @@
 import asyncio
-import csv
 import logging
 import sys
-
-import aiohttp
-import aiofiles
-import os
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.fsm.storage.redis import RedisStorage
-from aiogram.types import Message, BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat, \
-    InlineKeyboardButton, CallbackQuery
-from aiogram.filters import CommandStart, Command
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-
+from aiogram.fsm.storage.memory import MemoryStorage
 from config import settings
+from models import User
 
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, FSInputFile
-import tempfile, os, aiohttp
-
-from models import Region, District
-
-redis_url = 'redis://localhost:6379/0'
-
-dp = Dispatcher(storage=RedisStorage.from_url(redis_url))
+dp = Dispatcher(storage=MemoryStorage())
 
 
-
-class Form(StatesGroup):
+class RegisterForm(StatesGroup):
     name = State()
+    birth_year = State()
+    phone = State()
 
 
-def regions_inline_btn():
-    regions = Region.get_all()
-    ikm = InlineKeyboardBuilder()
-    for region in regions:
-        ikm.add(
-            InlineKeyboardButton(text=region.name, callback_data=f"region:{region.id}")
-        )
-    ikm.adjust(1)
-    return ikm
+class SearchForm(StatesGroup):
+    query = State()
 
-def district_inline_btns(region_id):
-    districts = District.filter(region_id=region_id)
-    ikm = InlineKeyboardBuilder()
-    for district in districts:
-        ikm.row(
-            InlineKeyboardButton(text=district.name, callback_data=f'district:{district.id}'),
-            InlineKeyboardButton(text='✏️', callback_data=f'change_district:{district.id}'),
-            InlineKeyboardButton(text='❌', callback_data=f'remove_district:{district.id}')
-        )
-    ikm.row(
-        InlineKeyboardButton(text='⬅️ Back', callback_data='back:region'),
+
+def contact_btn():
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="Telefon yuborish", request_contact=True)]],
+        resize_keyboard=True
     )
-    return ikm
-
 
 
 @dp.message(CommandStart())
-async def start_handler(message: Message):
-    await message.reply("Xush kelibsiz")
-    ikm = regions_inline_btn()
-    await message.answer("Viloyatlar:", reply_markup=ikm.as_markup())
+async def start_handler(message: Message, state: FSMContext):
+    user = User.get_by_telegram_id(message.from_user.id)
+    if user:
+        await message.answer("Xush kelbsz brooooo bizning botga, 👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋")
+    else:
+        await message.answer("Ismingizni kiriting brooooooooooooo ---->:")
+        await state.set_state(RegisterForm.name)
 
 
+@dp.message(RegisterForm.name)
+async def get_name(message: Message, state: FSMContext):
+    await state.update_data(name=message.text)
+    await message.answer("Tugilgan yilingizni kiriting broooooo ------> :")
+    await state.set_state(RegisterForm.birth_year)
 
 
-@dp.callback_query(F.data.startswith('change_district:'))
-async def callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
-    district_id = callback.data.removeprefix('change_district:')
-    await state.update_data(district_id=district_id)
-    await state.set_state(Form.name)
-    await callback.message.answer('Yangi nomini kiriting')
+@dp.message(RegisterForm.birth_year)
+async def get_year(message: Message, state: FSMContext):
+    await state.update_data(birth_year=message.text)
+    await message.answer("Telefonni yuboring:", reply_markup=contact_btn())
+    await state.set_state(RegisterForm.phone)
 
 
-@dp.message(Form.name)
-async def callback_handler(message: Message, state: FSMContext) -> None:
-    new_district_name = message.text
+@dp.message(RegisterForm.phone, F.contact)
+async def get_phone(message: Message, state: FSMContext):
     data = await state.get_data()
-    district_id = data['district_id']
-    District.update(district_id, name=new_district_name)
+    User.create(
+        telegram_id=message.from_user.id,
+        name=data["name"],
+        birth_year=data["birth_year"],
+        phone=message.contact.phone_number
+    )
     await state.clear()
-    await message.answer('Nomi ozgartirildi!')
+    await message.answer("Royxatdan o‘tdingiz broooooooo tabrikliman ✅✅✅✅✅✅✅✅✅✅")
 
 
-@dp.callback_query(F.data.startswith("region:"))
-async def region_handler(callback: CallbackQuery) -> None:
-    region_id = callback.data.removeprefix("region:")
-    ikm = district_inline_btns(region_id)
-    await callback.message.edit_text("Tumanni tanlang:")
-    await callback.message.edit_reply_markup(callback.inline_message_id, reply_markup=ikm.as_markup())
+@dp.message(Command("search"))
+async def search_start(message: Message, state: FSMContext):
+    await message.answer(
+        "Ism yoki telefon kiritsangiz men ozim sizga chotki qlb topb beraman, bir xursand boln brooooooo ----> ")
+    await state.set_state(SearchForm.query)
 
 
+@dp.message(SearchForm.query)
+async def search_handler(message: Message, state: FSMContext):
+    query = message.text.lower()
 
+    users = User.get_all()
+    natija = []
 
-@dp.callback_query(F.data.startswith("remove_district:"))
-async def district_btn_delete_handler(callback: CallbackQuery):
-    district_id = callback.data.removeprefix("remove_district:")
-    district = District.delete(district_id)
-    await callback.answer(f"{district.name} o'chirildi", show_alert=True)
-    ikm = district_inline_btns(district.region_id)
-    await callback.message.edit_reply_markup(callback.inline_message_id,  reply_markup=ikm.as_markup())
+    for user in users:
+        if query in user.name.lower() or query in user.phone:     #qaysiligini blmay qoldim and yokida or shunga yozb qoydim   if query in user.name.lower() and query in user.phone: qaysiligini blmay qoldim and yokida or shunga yozb qoydim
+            natija.append(user)
 
-
-
-
-
-
-@dp.callback_query(F.data.startswith('back:'))
-async def callback_handler(callback: CallbackQuery) -> None:
-    key = callback.data.removeprefix('back:')
-    if key == 'region':
-        ikm = regions_inline_btn()
-        await callback.message.edit_text('Viloyatlar')
-        await callback.message.edit_reply_markup(callback.inline_message_id, reply_markup=ikm.as_markup())
-
-
-
-@dp.message(Command("migrate"))
-async def migrate_handler(message: Message):
-    await message.answer("Ma’lumotlar bazaga yozildi!✅")
-
-    with open("regions.csv", encoding="utf-8-sig") as f1, open("districts.csv", encoding="utf-8-sig") as f2:
-        regions = csv.DictReader(f1)
-        districts = csv.DictReader(f2)
-        Region.bulk_create(list(regions))
-        District.bulk_create(list(districts))
+    if not natija:
+        await message.answer("Topilmadi bro ❌❌❌❌❌❌❌❌❌❌❌❌❌")
+    else:
+        text = "Topilganlar:\n\n"
+        for user in natija:
+            text += f"Ism: {user.name}\n"
+            text += f"Tug‘ilgan yil: {user.birth_year}\n"
+            text += f"Telefon: {user.phone}\n\n"
+        await message.answer(text)
+    await state.clear()
 
 
 async def main():
@@ -136,10 +104,16 @@ async def main():
         settings.TELEGRAM_BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
-
     await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     asyncio.run(main())
+
+
+
+
+
+
+
